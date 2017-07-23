@@ -4,14 +4,14 @@
 package gosocks5
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
+	//"log"
 	"net"
 	"strconv"
-	"sync"
 )
 
 const (
@@ -61,33 +61,16 @@ var (
 	ErrAuthFailure = errors.New("Auth failure")
 )
 
-// buffer pools
-var (
-	sPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 576)
-		},
-	} // small buff pool
-	lPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 64*1024+262)
-		},
-	} // large buff pool for udp
-)
-
 /*
 Method selection
- +----+----------+----------+
- |VER | NMETHODS | METHODS  |
- +----+----------+----------+
- | 1  |    1     | 1 to 255 |
- +----+----------+----------+
++----+----------+----------+
+|VER | NMETHODS | METHODS  |
++----+----------+----------+
+| 1  |    1     | 1 to 255 |
++----+----------+----------+
 */
 func ReadMethods(r io.Reader) ([]uint8, error) {
-	//b := make([]byte, 257)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
+	b := make([]byte, 257)
 	n, err := io.ReadAtLeast(r, b, 2)
 	if err != nil {
 		return nil, err
@@ -108,10 +91,7 @@ func ReadMethods(r io.Reader) ([]uint8, error) {
 		}
 	}
 
-	methods := make([]byte, int(b[1]))
-	copy(methods, b[2:length])
-
-	return methods, nil
+	return b[2:length], nil
 }
 
 func WriteMethod(method uint8, w io.Writer) error {
@@ -121,11 +101,11 @@ func WriteMethod(method uint8, w io.Writer) error {
 
 /*
  Username/Password authentication request
-  +----+------+----------+------+----------+
-  |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
-  +----+------+----------+------+----------+
-  | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
-  +----+------+----------+------+----------+
+ +----+------+----------+------+----------+
+ |VER | ULEN |  UNAME   | PLEN |  PASSWD  |
+ +----+------+----------+------+----------+
+ | 1  |  1   | 1 to 255 |  1   | 1 to 255 |
+ +----+------+----------+------+----------+
 */
 type UserPassRequest struct {
 	Version  byte
@@ -142,10 +122,7 @@ func NewUserPassRequest(ver byte, u, p string) *UserPassRequest {
 }
 
 func ReadUserPassRequest(r io.Reader) (*UserPassRequest, error) {
-	// b := make([]byte, 513)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
+	b := make([]byte, 513)
 	n, err := io.ReadAtLeast(r, b, 2)
 	if err != nil {
 		return nil, err
@@ -182,10 +159,7 @@ func ReadUserPassRequest(r io.Reader) (*UserPassRequest, error) {
 }
 
 func (req *UserPassRequest) Write(w io.Writer) error {
-	// b := make([]byte, 513)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
+	b := make([]byte, 513)
 	b[0] = req.Version
 	ulen := len(req.Username)
 	b[1] = byte(ulen)
@@ -202,18 +176,13 @@ func (req *UserPassRequest) Write(w io.Writer) error {
 	return err
 }
 
-func (req *UserPassRequest) String() string {
-	return fmt.Sprintf("%d %s:%s",
-		req.Version, req.Username, req.Password)
-}
-
 /*
  Username/Password authentication response
-  +----+--------+
-  |VER | STATUS |
-  +----+--------+
-  | 1  |   1    |
-  +----+--------+
+ +----+--------+
+ |VER | STATUS |
+ +----+--------+
+ | 1  |   1    |
+ +----+--------+
 */
 type UserPassResponse struct {
 	Version byte
@@ -228,11 +197,8 @@ func NewUserPassResponse(ver, status byte) *UserPassResponse {
 }
 
 func ReadUserPassResponse(r io.Reader) (*UserPassResponse, error) {
-	// b := make([]byte, 2)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
-	if _, err := io.ReadFull(r, b[:2]); err != nil {
+	b := make([]byte, 2)
+	if _, err := io.ReadFull(r, b); err != nil {
 		return nil, err
 	}
 
@@ -253,19 +219,6 @@ func (res *UserPassResponse) Write(w io.Writer) error {
 	return err
 }
 
-func (res *UserPassResponse) String() string {
-	return fmt.Sprintf("%d %d",
-		res.Version, res.Status)
-}
-
-/*
-Address
- +------+----------+----------+
- | ATYP |   ADDR   |   PORT   |
- +------+----------+----------+
- |  1   | Variable |    2     |
- +------+----------+----------+
-*/
 type Addr struct {
 	Type uint8
 	Host string
@@ -301,24 +254,15 @@ func (addr *Addr) Encode(b []byte) (int, error) {
 	pos := 1
 	switch addr.Type {
 	case AddrIPv4:
-		ip4 := net.ParseIP(addr.Host).To4()
-		if ip4 == nil {
-			ip4 = net.IPv4zero.To4()
-		}
-		pos += copy(b[pos:], ip4)
+		pos += copy(b[pos:], net.ParseIP(addr.Host).To4())
 	case AddrDomain:
 		b[pos] = byte(len(addr.Host))
 		pos++
 		pos += copy(b[pos:], []byte(addr.Host))
 	case AddrIPv6:
-		ip16 := net.ParseIP(addr.Host).To16()
-		if ip16 == nil {
-			ip16 = net.IPv6zero.To16()
-		}
-		pos += copy(b[pos:], ip16)
+		pos += copy(b[pos:], net.ParseIP(addr.Host).To16())
 	default:
 		b[0] = AddrIPv4
-		copy(b[pos:pos+4], net.IPv4zero.To4())
 		pos += 4
 	}
 	binary.BigEndian.PutUint16(b[pos:], addr.Port)
@@ -327,31 +271,17 @@ func (addr *Addr) Encode(b []byte) (int, error) {
 	return pos, nil
 }
 
-func (addr *Addr) Length() (n int) {
-	switch addr.Type {
-	case AddrIPv4:
-		n = 10
-	case AddrIPv6:
-		n = 22
-	case AddrDomain:
-		n = 7 + len(addr.Host)
-	default:
-		n = 10
-	}
-	return
-}
-
 func (addr *Addr) String() string {
 	return net.JoinHostPort(addr.Host, strconv.Itoa(int(addr.Port)))
 }
 
 /*
 The SOCKSv5 request
- +----+-----+-------+------+----------+----------+
- |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
- +----+-----+-------+------+----------+----------+
- | 1  |  1  | X'00' |  1   | Variable |    2     |
- +----+-----+-------+------+----------+----------+
++----+-----+-------+------+----------+----------+
+|VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
++----+-----+-------+------+----------+----------+
+| 1  |  1  | X'00' |  1   | Variable |    2     |
++----+-----+-------+------+----------+----------+
 */
 type Request struct {
 	Cmd  uint8
@@ -366,10 +296,7 @@ func NewRequest(cmd uint8, addr *Addr) *Request {
 }
 
 func ReadRequest(r io.Reader) (*Request, error) {
-	// b := make([]byte, 262)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
+	b := make([]byte, 262)
 	n, err := io.ReadAtLeast(r, b, 5)
 	if err != nil {
 		return nil, err
@@ -411,22 +338,18 @@ func ReadRequest(r io.Reader) (*Request, error) {
 }
 
 func (r *Request) Write(w io.Writer) (err error) {
-	//b := make([]byte, 262)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
+	b := make([]byte, 262)
 
 	b[0] = Ver5
 	b[1] = r.Cmd
-	b[2] = 0        //rsv
+	// b[2] = 0 //rsv
 	b[3] = AddrIPv4 // default
 
-	addr := r.Addr
-	if addr == nil {
-		addr = &Addr{}
+	length := 10
+	if r.Addr != nil {
+		n, _ := r.Addr.Encode(b[3:])
+		length = 3 + n
 	}
-	n, _ := addr.Encode(b[3:])
-	length := 3 + n
-
 	_, err = w.Write(b[:length])
 	return
 }
@@ -442,11 +365,11 @@ func (r *Request) String() string {
 
 /*
 The SOCKSv5 reply
- +----+-----+-------+------+----------+----------+
- |VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
- +----+-----+-------+------+----------+----------+
- | 1  |  1  | X'00' |  1   | Variable |    2     |
- +----+-----+-------+------+----------+----------+
++----+-----+-------+------+----------+----------+
+|VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
++----+-----+-------+------+----------+----------+
+| 1  |  1  | X'00' |  1   | Variable |    2     |
++----+-----+-------+------+----------+----------+
 */
 type Reply struct {
 	Rep  uint8
@@ -461,10 +384,7 @@ func NewReply(rep uint8, addr *Addr) *Reply {
 }
 
 func ReadReply(r io.Reader) (*Reply, error) {
-	// b := make([]byte, 262)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
+	b := make([]byte, 262)
 	n, err := io.ReadAtLeast(r, b, 5)
 	if err != nil {
 		return nil, err
@@ -507,13 +427,11 @@ func ReadReply(r io.Reader) (*Reply, error) {
 }
 
 func (r *Reply) Write(w io.Writer) (err error) {
-	// b := make([]byte, 262)
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
+	b := make([]byte, 262)
 
 	b[0] = Ver5
 	b[1] = r.Rep
-	b[2] = 0        //rsv
+	// b[2] = 0 //rsv
 	b[3] = AddrIPv4 // default
 
 	length := 10
@@ -537,11 +455,11 @@ func (r *Reply) String() string {
 
 /*
 UDP request
- +----+------+------+----------+----------+----------+
- |RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
- +----+------+------+----------+----------+----------+
- | 2  |  1   |  1   | Variable |    2     | Variable |
- +----+------+------+----------+----------+----------+
++----+------+------+----------+----------+----------+
+|RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
++----+------+------+----------+----------+----------+
+| 2  |  1   |  1   | Variable |    2     | Variable |
++----+------+------+----------+----------+----------+
 */
 type UDPHeader struct {
 	Rsv  uint16
@@ -555,23 +473,6 @@ func NewUDPHeader(rsv uint16, frag uint8, addr *Addr) *UDPHeader {
 		Frag: frag,
 		Addr: addr,
 	}
-}
-
-func (h *UDPHeader) Write(w io.Writer) error {
-	b := sPool.Get().([]byte)
-	defer sPool.Put(b)
-
-	binary.BigEndian.PutUint16(b[:2], h.Rsv)
-	b[2] = h.Frag
-
-	addr := h.Addr
-	if addr == nil {
-		addr = &Addr{}
-	}
-	length, _ := addr.Encode(b[3:])
-
-	_, err := w.Write(b[:3+length])
-	return err
 }
 
 func (h *UDPHeader) String() string {
@@ -592,13 +493,8 @@ func NewUDPDatagram(header *UDPHeader, data []byte) *UDPDatagram {
 }
 
 func ReadUDPDatagram(r io.Reader) (*UDPDatagram, error) {
-	b := lPool.Get().([]byte)
-	defer lPool.Put(b)
-
-	// when r is a streaming (such as TCP connection), we may read more than the required data,
-	// but we don't know how to handle it. So we use io.ReadFull to instead of io.ReadAtLeast
-	// to make sure that no redundant data will be discarded.
-	n, err := io.ReadFull(r, b[:5])
+	b := make([]byte, 65797)
+	n, err := io.ReadAtLeast(r, b, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -620,17 +516,9 @@ func ReadUDPDatagram(r io.Reader) (*UDPDatagram, error) {
 	default:
 		return nil, ErrBadAddrType
 	}
-
+	// extended feature, for udp over tcp
 	dlen := int(header.Rsv)
-	if dlen == 0 { // standard SOCKS5 UDP datagram
-		extra, err := ioutil.ReadAll(r) // we assume no redundant data
-		if err != nil {
-			return nil, err
-		}
-		copy(b[n:], extra)
-		n += len(extra) // total length
-		dlen = n - hlen // data length
-	} else { // extended feature, for UDP over TCP, using reserved field as data length
+	if n < hlen+dlen {
 		if _, err := io.ReadFull(r, b[n:hlen+dlen]); err != nil {
 			return nil, err
 		}
@@ -642,26 +530,38 @@ func ReadUDPDatagram(r io.Reader) (*UDPDatagram, error) {
 		return nil, err
 	}
 
-	data := make([]byte, dlen)
-	copy(data, b[hlen:n])
-
 	d := &UDPDatagram{
 		Header: header,
-		Data:   data,
+		Data:   b[hlen:n],
 	}
 
 	return d, nil
 }
 
 func (d *UDPDatagram) Write(w io.Writer) error {
-	h := d.Header
-	if h == nil {
-		h = &UDPHeader{}
+	buffer := &bytes.Buffer{}
+
+	b := make([]byte, 259)
+	if d.Header != nil {
+		binary.BigEndian.PutUint16(b[:2], d.Header.Rsv)
+		buffer.Write(b[:2])
+		buffer.WriteByte(d.Header.Frag)
+
+		b[0] = AddrIPv4
+		b[1] = 0
+		length := 7
+
+		if d.Header.Addr != nil {
+			length, _ = d.Header.Addr.Encode(b)
+		}
+		buffer.Write(b[:length])
+	} else {
+		b[3] = AddrIPv4
+		buffer.Write(b[:10])
 	}
-	if err := h.Write(w); err != nil {
-		return err
-	}
-	_, err := w.Write(d.Data)
+
+	buffer.Write(d.Data)
+	_, err := w.Write(buffer.Bytes())
 
 	return err
 }
